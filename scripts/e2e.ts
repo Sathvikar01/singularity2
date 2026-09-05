@@ -89,7 +89,6 @@ async function main() {
   check("team host assigned", !!team && !!team.hostId, team?.hostId?.toHexString().slice(0, 8));
   const roles = playersOf(alice).flatMap((p) => p.roles).sort();
   check("roles auto-assigned", roles.join(",") === "arms,head", roles.join(","));
-  const aliceRow = playersOf(alice).find((p) => p.hex === alice.hex)!;
   check("alice is earliest -> host & leader", !!team && team.hostId?.toHexString() === alice.hex && roomOf(alice)?.nextPlayerSeq === 2n);
 
   alice.conn.reducers.setReady({ ready: true });
