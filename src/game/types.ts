@@ -1,29 +1,74 @@
-export const ROLES = ["head", "arms", "torso", "lleg", "rleg"] as const;
+export const PHYS_ROLES = ["head", "arms", "torso", "lleg", "rleg"] as const;
+export type PhysRole = (typeof PHYS_ROLES)[number];
+
+// Squad roles players actually pick. 3-player: arms+torso+legs. 5-player: split hands + split legs.
+export const ROLES_3 = ["arms", "torso", "legs"] as const;
+export const ROLES_5 = ["lhand", "rhand", "torso", "lleg", "rleg"] as const;
+export type SquadSize = 3 | 5;
+// Union of every assignable role (legacy head kept for old rooms).
+export const ROLES = ["arms", "torso", "legs", "lhand", "rhand", "lleg", "rleg", "head"] as const;
 export type Role = (typeof ROLES)[number];
+
+export function squadRoles(squad: SquadSize): readonly Role[] {
+  return squad === 3 ? ROLES_3 : ROLES_5;
+}
 
 export const ROLE_INFO: Record<Role, { label: string; short: string; emoji: string; blurb: string; keys: { key: string; does: string }[] }> = {
   head: {
-    label: "Head & Eyes",
+    label: "Head & Eyes (legacy)",
     short: "HEAD",
     emoji: "👀",
-    blurb: "You steer the camera and the direction the body faces. Everyone sees what you see.",
-    keys: [
-      { key: "Mouse / A D", does: "Turn head (body follows)" },
-      { key: "W S", does: "Look up / down" },
-      { key: "Space", does: "SHOUT" },
-    ],
+    blurb: "Legacy role — pick Torso instead (Torso now steers the camera).",
+    keys: [{ key: "Mouse / A D", does: "Turn head (body follows)" }],
   },
   arms: {
     label: "Arms & Hands",
     short: "ARMS",
     emoji: "🙌",
-    blurb: "Reach, grab, carry, climb and throw. Crouch help from Torso makes ground grabs easier.",
+    blurb: "3-player mode: both hands together. Reach, grab, carry, climb and throw.",
     keys: [
       { key: "W S", does: "Raise / lower arms (pull up when hanging)" },
       { key: "A D", does: "Swing arms left / right" },
       { key: "Space", does: "Grab (hold) both hands" },
       { key: "Q / E", does: "Grab left / right hand" },
       { key: "Shift", does: "THROW held object" },
+    ],
+  },
+  legs: {
+    label: "Legs (both)",
+    short: "LEGS",
+    emoji: "🦵",
+    blurb: "3-player mode: hold W to auto-alternate steps. You do the rhythm, Torso does the balance.",
+    keys: [
+      { key: "W / S", does: "Walk forward / back (auto-alternates)" },
+      { key: "A D", does: "Side step" },
+      { key: "Space", does: "JUMP" },
+    ],
+  },
+  lhand: {
+    label: "Left Hand",
+    short: "L HAND",
+    emoji: "🤚",
+    blurb: "Own the left hand. BOTH hands must hold Space to two-hand grab; Q grabs left alone.",
+    keys: [
+      { key: "W S", does: "Raise / lower (averages with right hand)" },
+      { key: "A D", does: "Swing (averages with right hand)" },
+      { key: "Space", does: "Two-hand grab (needs BOTH players)" },
+      { key: "Q", does: "Grab left hand alone" },
+      { key: "Shift", does: "THROW (needs BOTH players)" },
+    ],
+  },
+  rhand: {
+    label: "Right Hand",
+    short: "R HAND",
+    emoji: "✋",
+    blurb: "Own the right hand. BOTH hands must hold Space to two-hand grab; E grabs right alone.",
+    keys: [
+      { key: "W S", does: "Raise / lower (averages with right hand)" },
+      { key: "A D", does: "Swing (averages with right hand)" },
+      { key: "Space", does: "Two-hand grab (needs BOTH players)" },
+      { key: "E", does: "Grab right hand alone" },
+      { key: "Shift", does: "THROW (needs BOTH players)" },
     ],
   },
   torso: {
@@ -99,6 +144,7 @@ export interface RoomSnapshot {
   code: string;
   phase: Phase;
   challengeId: string;
+  squadSize: SquadSize;
   players: PlayerInfo[];
   teams: TeamInfo[];
   startAt: number | null;
@@ -113,12 +159,16 @@ export interface ChallengeMeta {
   tagline: string;
   goal: string;
   icon: string;
+  difficulty: "easy" | "medium" | "hard" | "bonus";
+  players: string;
 }
 
 export const CHALLENGES: ChallengeMeta[] = [
-  { id: "wobble-run", name: "Wobble Run", tagline: "Hurdles, a skinny bridge, a ramp and a wall.", goal: "Reach the finish gate", icon: "🏁" },
-  { id: "egg-express", name: "Egg Express", tagline: "Carry the giant egg. Do NOT drop it.", goal: "Deliver the egg to the pad", icon: "🥚" },
-  { id: "slam-dunk", name: "Slam Dunk", tagline: "Pick up balls. Throw them in the hoop.", goal: "Score 3 baskets", icon: "🏀" },
+  { id: "wobble-run", name: "Wobble Run", tagline: "Easy — hurdles, a skinny bridge, a ramp and a wall.", goal: "Reach the finish gate", icon: "🏁", difficulty: "easy", players: "3 or 5" },
+  { id: "ferry-job", name: "Ferry Job", tagline: "Medium — grab the cargo, ride sliding ferries, don't drop it.", goal: "Carry the cargo to the glowing pad", icon: "📦", difficulty: "medium", players: "3 or 5" },
+  { id: "summit-sync", name: "Summit Sync", tagline: "Hard — climb, cross sinking ferries, place the core, beat the gate.", goal: "Place the core, then sprint the timing gate", icon: "⛰️", difficulty: "hard", players: "3 or 5" },
+  { id: "egg-express", name: "Egg Express", tagline: "Bonus — carry the giant egg. Do NOT drop it.", goal: "Deliver the egg to the pad", icon: "🥚", difficulty: "bonus", players: "3 or 5" },
+  { id: "slam-dunk", name: "Slam Dunk", tagline: "Bonus — pick up balls. Throw them in the hoop.", goal: "Score 3 baskets", icon: "🏀", difficulty: "bonus", players: "3 or 5" },
 ];
 
 export const TEAM_COLORS = ["#ff5d5d", "#4fa8ff", "#ffd23f", "#6ef29a", "#c58bff", "#ff9a3c"];
