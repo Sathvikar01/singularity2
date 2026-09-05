@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CHALLENGES, ROLES, ROLE_INFO, formatTime } from "@/game/types";
+import { CHALLENGES, ROLES_5, ROLE_INFO, formatTime, type SquadSize } from "@/game/types";
 import { DbConnection, type EventContext } from "@/module_bindings";
 import { SPACETIMEDB_MODULE, SPACETIMEDB_URI } from "@/game/net";
 
@@ -69,6 +69,7 @@ export default function Home() {
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
+  const [tab, setTab] = useState<SquadSize>(5);
   const { rows, online } = useScoreFeed();
 
   useEffect(() => {
@@ -93,7 +94,8 @@ export default function Home() {
     router.push(`/play/${c}`);
   };
 
-  const top = (challengeId: string, n: number) => rows.filter((r) => r.challengeId === challengeId).slice(0, n);
+  const top = (challengeId: string, n: number) =>
+    rows.filter((r) => r.challengeId === challengeId && (r.players?.length ?? 5) === tab).slice(0, n);
 
   return (
     <main className="min-h-dvh bg-[radial-gradient(ellipse_at_top,#1d2a5a_0%,#0b1020_60%)] text-white">
@@ -104,12 +106,17 @@ export default function Home() {
             SINGULARITY <span className="text-[#ffd23f]">2</span>
           </h1>
           <p className="mx-auto mt-4 max-w-xl text-lg text-white/75">
-            Five players. <span className="font-black text-white">One body.</span> Someone steers the head, someone works the arms, someone keeps the torso balanced, and two people each own a leg. Walk, climb, grab, throw — and try not to fall in the water.
+            3 or 5 players. <span className="font-black text-white">One body.</span> Torso steers the eyes and balance, hands grab and carry (both must agree), legs walk in rhythm. Walk, climb, ferry cargo — and try not to fall in the water.
           </p>
+          <div className="mt-3 flex items-center justify-center gap-2 text-xs font-bold">
+            <span className="rounded-full bg-[#6ef29a] px-2 py-0.5 text-black">EASY · Wobble Run</span>
+            <span className="rounded-full bg-[#4fa8ff] px-2 py-0.5 text-black">MEDIUM · Ferry Job</span>
+            <span className="rounded-full bg-[#ff5d5d] px-2 py-0.5 text-black">HARD · Summit Sync</span>
+          </div>
         </header>
 
         <div className="mt-10 grid gap-4 md:grid-cols-5">
-          {ROLES.map((r) => (
+          {ROLES_5.map((r) => (
             <div key={r} className="float rounded-2xl bg-white/5 p-4 text-center border border-white/10" style={{ animationDelay: `${Math.random() * 2}s` }}>
               <div className="text-4xl">{ROLE_INFO[r].emoji}</div>
               <div className="mt-1 font-black">{ROLE_INFO[r].label}</div>
@@ -131,11 +138,11 @@ export default function Home() {
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
               <button disabled={busy} onClick={() => create(false)} className="rounded-2xl bg-[#ffd23f] px-5 py-4 text-xl font-black text-black shadow-[0_6px_0_#b8931a] transition hover:brightness-110 active:translate-y-1 active:shadow-none disabled:opacity-60">
                 Create room
-                <div className="text-xs font-bold opacity-70">invite up to 5 per team</div>
+                <div className="text-xs font-bold opacity-70">3 or 5 per team · pick in lobby</div>
               </button>
               <button disabled={busy} onClick={() => create(true)} className="rounded-2xl bg-white/10 px-5 py-4 text-xl font-black shadow-[0_6px_0_rgba(0,0,0,0.4)] transition hover:bg-white/20 active:translate-y-1 active:shadow-none disabled:opacity-60">
                 Solo practice
-                <div className="text-xs font-bold opacity-70">control all 5 parts (Tab to switch)</div>
+                <div className="text-xs font-bold opacity-70">control every part (Tab to switch)</div>
               </button>
             </div>
             <div className="mt-5 flex gap-2">
@@ -154,22 +161,29 @@ export default function Home() {
             <div className="mt-5 grid gap-2 text-sm text-white/70 sm:grid-cols-2">
               <div className="rounded-xl bg-black/30 p-3">
                 <div className="font-black text-white">How walking works</div>
-                Left leg presses <kbd className="rounded bg-white/15 px-1">W</kbd>, then right leg presses <kbd className="rounded bg-white/15 px-1">W</kbd>. Alternate. Both at once? You fall on your face.
+                5P: left leg presses <kbd className="rounded bg-white/15 px-1">W</kbd>, then right leg presses <kbd className="rounded bg-white/15 px-1">W</kbd>. 3P: legs holds <kbd className="rounded bg-white/15 px-1">W</kbd> to auto-alternate. Both at once? You fall on your face.
               </div>
               <div className="rounded-xl bg-black/30 p-3">
-                <div className="font-black text-white">How climbing works</div>
-                Torso crouches, arms raise and grab the ledge, arms pull down, legs step, torso leans forward. Shouting helps.
+                <div className="font-black text-white">How carrying works</div>
+                5P: BOTH hands must hold <kbd className="rounded bg-white/15 px-1">Space</kbd> to grab together, both <kbd className="rounded bg-white/15 px-1">Shift</kbd> to throw. 3P: arms grabs alone. Shouting (Torso <kbd className="rounded bg-white/15 px-1">Q</kbd>) helps.
               </div>
             </div>
           </div>
 
           <div className="rounded-3xl bg-white/5 border border-white/10 p-6">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <div className="text-xs uppercase tracking-widest text-white/60">Challenges & best times</div>
-              <span className={`flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wider ${online ? "bg-[#6ef29a]/15 text-[#6ef29a]" : "bg-white/10 text-white/50"}`}>
-                <span className={`h-1.5 w-1.5 rounded-full ${online ? "bg-[#6ef29a]" : "bg-white/40"}`} />
-                {online ? "live" : "offline"}
-              </span>
+              <div className="flex items-center gap-1">
+                {([3, 5] as SquadSize[]).map((n) => (
+                  <button key={n} onClick={() => setTab(n)} className={`rounded-lg px-2 py-0.5 text-xs font-black ${tab === n ? "bg-[#6ef29a] text-black" : "bg-white/10 text-white/70 hover:bg-white/20"}`}>
+                    {n}P
+                  </button>
+                ))}
+                <span className={`flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wider ${online ? "bg-[#6ef29a]/15 text-[#6ef29a]" : "bg-white/10 text-white/50"}`}>
+                  <span className={`h-1.5 w-1.5 rounded-full ${online ? "bg-[#6ef29a]" : "bg-white/40"}`} />
+                  {online ? "live" : "offline"}
+                </span>
+              </div>
             </div>
             <div className="mt-3 flex flex-col gap-4">
               {CHALLENGES.map((c) => (
@@ -177,7 +191,10 @@ export default function Home() {
                   <div className="flex items-center gap-2">
                     <span className="text-2xl">{c.icon}</span>
                     <div>
-                      <div className="font-black">{c.name}</div>
+                      <div className="font-black">
+                        {c.name}{" "}
+                        <span className="ml-1 rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-black uppercase text-white/70">{c.difficulty}</span>
+                      </div>
                       <div className="text-xs text-white/60">{c.tagline}</div>
                     </div>
                   </div>
@@ -197,7 +214,7 @@ export default function Home() {
           </div>
         </section>
 
-        <footer className="mt-10 text-center text-xs text-white/40">Built with Three.js + Rapier physics + SpacetimeDB. Works best in Chrome with a keyboard and four friends yelling at you.</footer>
+        <footer className="mt-10 text-center text-xs text-white/40">Built with Three.js + Rapier physics + SpacetimeDB. Works best in Chrome with a keyboard and two to four friends yelling at you.</footer>
       </div>
     </main>
   );
