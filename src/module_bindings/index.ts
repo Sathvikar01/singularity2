@@ -46,6 +46,7 @@ import SendInputReducer from "./send_input_reducer";
 import SetChallengeReducer from "./set_challenge_reducer";
 import SetReadyReducer from "./set_ready_reducer";
 import SetRoleReducer from "./set_role_reducer";
+import SetSquadReducer from "./set_squad_reducer";
 import StartRoundReducer from "./start_round_reducer";
 
 // Import all procedure arg schemas
@@ -57,6 +58,7 @@ import PlayerRow from "./player_table";
 import RoomRow from "./room_table";
 import ScoreRow from "./score_table";
 import SnapshotRow from "./snapshot_table";
+import SquadRow from "./squad_table";
 import TeamRow from "./team_table";
 
 /** Type-only namespace exports for generated type groups. */
@@ -144,6 +146,17 @@ const tablesSchema = __schema({
       { name: 'snapshot_team_id_key', constraint: 'unique', columns: ['teamId'] },
     ],
   }, SnapshotRow),
+  squad: __table({
+    name: 'squad',
+    indexes: [
+      { accessor: 'code', name: 'squad_code_idx_btree', algorithm: 'btree', columns: [
+        'code',
+      ] },
+    ],
+    constraints: [
+      { name: 'squad_code_key', constraint: 'unique', columns: ['code'] },
+    ],
+  }, SquadRow),
   team: __table({
     name: 'team',
     indexes: [
@@ -174,6 +187,7 @@ const reducersSchema = __reducers(
   __reducerSchema("set_challenge", SetChallengeReducer),
   __reducerSchema("set_ready", SetReadyReducer),
   __reducerSchema("set_role", SetRoleReducer),
+  __reducerSchema("set_squad", SetSquadReducer),
   __reducerSchema("start_round", StartRoundReducer),
 );
 

@@ -11,11 +11,13 @@ import { ScheduleAt } from 'spacetimedb';
 
 /* ---------------------------------- constants ---------------------------------- */
 
-const CHALLENGE_IDS = new Set(['wobble-run', 'egg-express', 'slam-dunk']);
-const ROLES = new Set(['head', 'arms', 'torso', 'lleg', 'rleg']);
-const ALL_ROLES = ['head', 'arms', 'torso', 'lleg', 'rleg'];
+const CHALLENGE_IDS = new Set(['wobble-run', 'ferry-job', 'summit-sync', 'egg-express', 'slam-dunk']);
+// Squad roles players actually pick. 3-player: arms+torso+legs. 5-player: split hands + split legs.
+const SQUAD_3 = ['arms', 'torso', 'legs'];
+const SQUAD_5 = ['lhand', 'rhand', 'torso', 'lleg', 'rleg'];
+// Every assignable role (legacy head/arms kept for old rooms).
+const ROLES = new Set(['arms', 'torso', 'legs', 'lhand', 'rhand', 'lleg', 'rleg', 'head']);
 const TEAM_COLORS = ['#ff5d5d', '#4fa8ff', '#ffd23f', '#6ef29a', '#c58bff', '#ff9a3c'];
-const MAX_TEAM_SIZE = 5;
 
 const COUNTDOWN_MICROS = 4_200_000n; // 4.2s
 const GRACE_MICROS = 45_000_000n; // 45s for remaining teams after a finish
@@ -121,6 +123,15 @@ const score = table(
   }
 );
 
+/** Per-room squad size (3 or 5). Separate table so existing rooms/scores need no migration. */
+const squad = table(
+  { name: 'squad', public: true },
+  {
+    code: t.string().primaryKey(),
+    size: t.u8(),
+  }
+);
+
 /** One-shot scheduled timers: kind = 'start' (countdown over) or 'grace' (round grace over). */
 const round_timer = table(
   { name: 'round_timer', scheduled: (): any => onRoundTimer },
@@ -158,6 +169,7 @@ const spacetimedb = schema({
   snapshot,
   input,
   score,
+  squad,
   round_timer,
   cleanup_timer,
   conn,
@@ -249,7 +261,19 @@ function deleteRoom(ctx: any, code: string) {
   for (const s of [...ctx.db.snapshot.code.filter(code)]) ctx.db.snapshot.team_id.delete(s.team_id);
   for (const i of [...ctx.db.input.code.filter(code)]) ctx.db.input.identity.delete(i.identity);
   for (const rt of [...ctx.db.round_timer.iter()]) if (rt.code === code) ctx.db.round_timer.scheduled_id.delete(rt.scheduled_id);
+  const sq = ctx.db.squad.code.find(code);
+  if (sq) ctx.db.squad.code.delete(code);
   ctx.db.room.code.delete(code);
+}
+
+/** Room's squad size (3 or 5). Defaults to 5 for rooms created before squads existed. */
+function squadSizeOf(ctx: any, code: string): number {
+  const sq = ctx.db.squad.code.find(code);
+  return sq && sq.size === 3 ? 3 : 5;
+}
+
+function squadRolesOf(ctx: any, code: string): string[] {
+  return squadSizeOf(ctx, code) === 3 ? SQUAD_3 : SQUAD_5;
 }
 
 /** Auto-assign the first free role on a team; returns the assigned roles array. */
@@ -259,7 +283,7 @@ function pickFreeRole(ctx: any, code: string, teamId: bigint): string[] {
       .filter((p: any) => p.team_id === teamId)
       .flatMap((p: any) => p.roles)
   );
-  for (const r of ALL_ROLES) if (!taken.has(r)) return [r];
+  for (const r of squadRolesOf(ctx, code)) if (!taken.has(r)) return [r];
   return [];
 }
 
@@ -318,7 +342,7 @@ export const joinRoom = spacetimedb.reducer(
       if (solo && !existing.solo) {
         existing.solo = true;
         existing.ready = true;
-        existing.roles = [...ALL_ROLES];
+        existing.roles = [...squadRolesOf(ctx, code)];
       }
       ctx.db.player.identity.update(existing);
       return;
@@ -329,14 +353,15 @@ export const joinRoom = spacetimedb.reducer(
     let ready = false;
     if (solo) {
       tm = newTeam(ctx, code);
-      roles = [...ALL_ROLES];
+      roles = [...squadRolesOf(ctx, code)];
       ready = true;
     } else {
       // join the team with the most free slots but at least one person, else new team
+      const cap = squadSizeOf(ctx, code);
       const counts = new Map<bigint, number>();
       for (const p of playersIn(ctx, code)) counts.set(p.team_id, (counts.get(p.team_id) ?? 0) + 1);
       const candidates = teamsIn(ctx, code)
-        .filter((tm: any) => (counts.get(tm.id) ?? 0) < MAX_TEAM_SIZE)
+        .filter((tm: any) => (counts.get(tm.id) ?? 0) < cap)
         .sort((a: any, b: any) => (counts.get(a.id) ?? 0) - (counts.get(b.id) ?? 0));
       tm = candidates.length > 0 ? candidates[candidates.length - 1] : newTeam(ctx, code);
       roles = pickFreeRole(ctx, code, tm.id);
@@ -380,6 +405,8 @@ export const setRole = spacetimedb.reducer({ role: t.string() }, (ctx, { role })
   if (!ROLES.has(role)) return;
   const p = ctx.db.player.identity.find(ctx.sender);
   if (!p) return;
+  // only the current squad's roles (plus legacy head/arms which map onto torso-cam/shared hands)
+  if (!squadRolesOf(ctx, p.code).includes(role) && role !== 'head' && role !== 'arms') return;
   const micros = nowMicros(ctx);
   if (p.roles.includes(role)) {
     p.roles = p.roles.filter((x: string) => x !== role);
@@ -405,7 +432,7 @@ export const joinTeam = spacetimedb.reducer({ teamId: t.u64() }, (ctx, { teamId 
   if (!tm || tm.code !== p.code) return;
   if (tm.id !== p.team_id) {
     const members = playersIn(ctx, p.code).filter((x: any) => x.team_id === tm.id);
-    if (members.length >= MAX_TEAM_SIZE) return;
+    if (members.length >= squadSizeOf(ctx, p.code)) return;
     p.team_id = tm.id;
     const taken = new Set(members.filter((x: any) => !x.identity.equals(ctx.sender)).flatMap((x: any) => x.roles));
     p.roles = p.roles.filter((r: string) => !taken.has(r));
@@ -423,7 +450,7 @@ export const createTeam = spacetimedb.reducer((ctx) => {
   const micros = nowMicros(ctx);
   const tm = newTeam(ctx, p.code);
   p.team_id = tm.id;
-  p.roles = p.solo ? [...ALL_ROLES] : pickFreeRole(ctx, p.code, tm.id);
+  p.roles = p.solo ? [...squadRolesOf(ctx, p.code)] : pickFreeRole(ctx, p.code, tm.id);
   p.ready = p.solo;
   ctx.db.player.identity.update(p);
   fixHosts(ctx, p.code);
@@ -454,6 +481,36 @@ export const setChallenge = spacetimedb.reducer({ challengeId: t.string() }, (ct
   touchRoom(ctx, r, nowMicros(ctx));
 });
 
+/** Leader-only squad switch (3 or 5 players). Clears role picks; everyone re-picks. */
+export const setSquad = spacetimedb.reducer({ size: t.u8() }, (ctx, { size }) => {
+  if (size !== 3 && size !== 5) return;
+  const p = ctx.db.player.identity.find(ctx.sender);
+  if (!p) return;
+  const r = ctx.db.room.code.find(p.code);
+  const leader = leaderOf(ctx, p.code);
+  if (!r || r.phase !== 'lobby' || !leader || !leader.identity.equals(ctx.sender)) return;
+  const cur = ctx.db.squad.code.find(p.code);
+  if (cur && cur.size === size) return;
+  if (cur) {
+    cur.size = size;
+    ctx.db.squad.code.update(cur);
+  } else {
+    ctx.db.squad.insert({ code: p.code, size });
+  }
+  const roles = size === 3 ? SQUAD_3 : SQUAD_5;
+  for (const tm of teamsIn(ctx, p.code)) {
+    const members = playersIn(ctx, p.code).filter((m: any) => m.team_id === tm.id);
+    let first = true;
+    for (const m of members) {
+      m.roles = first ? [roles[0]] : [];
+      m.ready = false;
+      ctx.db.player.identity.update(m);
+      first = false;
+    }
+  }
+  touchRoom(ctx, r, nowMicros(ctx));
+});
+
 export const startRound = spacetimedb.reducer({ force: t.bool() }, (ctx, { force }) => {
   const p = ctx.db.player.identity.find(ctx.sender);
   if (!p) return;
@@ -471,7 +528,7 @@ export const startRound = spacetimedb.reducer({ force: t.bool() }, (ctx, { force
       .sort((a: any, b: any) => (a.joined_seq < b.joined_seq ? -1 : a.joined_seq > b.joined_seq ? 1 : 0));
     if (teamMembers.length === 0) continue;
     const taken = new Set(teamMembers.flatMap((m: any) => m.roles));
-    for (const role of ALL_ROLES) {
+    for (const role of squadRolesOf(ctx, p.code)) {
       if (taken.has(role)) continue;
       const target = [...teamMembers].sort((a: any, b: any) => a.roles.length - b.roles.length)[0];
       target.roles = [...target.roles, role];

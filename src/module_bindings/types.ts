@@ -105,6 +105,12 @@ export const Snapshot = __t.object("Snapshot", {
 });
 export type Snapshot = __Infer<typeof Snapshot>;
 
+export const Squad = __t.object("Squad", {
+  code: __t.string(),
+  size: __t.u8(),
+});
+export type Squad = __Infer<typeof Squad>;
+
 export const Team = __t.object("Team", {
   id: __t.u64(),
   code: __t.string(),

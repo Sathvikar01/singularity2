@@ -7,14 +7,14 @@
  * it talked to the old Net.
  */
 import { DbConnection, type EventContext } from "@/module_bindings";
-import type { Room, Player, Team, Snapshot, Input } from "@/module_bindings/types";
-import { MAX_TEAM_SIZE, type Phase, type PlayerInfo, type Role, type RoleInput, type RoomSnapshot, type TeamInfo } from "./types";
+import type { Room, Player, Team, Snapshot, Input, Squad } from "@/module_bindings/types";
+import { MAX_TEAM_SIZE, type Phase, type PlayerInfo, type Role, type RoleInput, type RoomSnapshot, type SquadSize, type TeamInfo } from "./types";
 import type { Snap } from "./game";
 
 export const SPACETIMEDB_URI = process.env.NEXT_PUBLIC_SPACETIMEDB_URI ?? "wss://maincloud.spacetimedb.com";
 export const SPACETIMEDB_MODULE = process.env.NEXT_PUBLIC_SPACETIMEDB_MODULE ?? "singularity2";
 
-const ALL_ROLES: Role[] = ["head", "arms", "torso", "lleg", "rleg"];
+const ALL_ROLES: Role[] = ["arms", "torso", "legs", "lhand", "rhand", "lleg", "rleg", "head"];
 const RECONNECT_MIN_MS = 500;
 const RECONNECT_MAX_MS = 5000;
 
@@ -56,6 +56,7 @@ export class Net {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempt = 0;
   private roomRow: Room | null = null;
+  private squadSize: SquadSize = 5;
   private players = new Map<string, Player>();
   private teams = new Map<string, Team>();
   private inputRows = new Map<string, Input>();
@@ -103,6 +104,7 @@ export class Net {
             `SELECT * FROM team WHERE code = '${this.code}'`,
             `SELECT * FROM snapshot WHERE code = '${this.code}'`,
             `SELECT * FROM input WHERE code = '${this.code}'`,
+            `SELECT * FROM squad WHERE code = '${this.code}'`,
             `SELECT * FROM score`,
           ]);
       })
@@ -242,6 +244,19 @@ export class Net {
     conn.db.score.onDelete((_ctx: EventContext, row) => {
       if (this.scoreRows.delete(row.id.toString())) this.emitScores();
     });
+
+    const applySquad = (row: Squad) => {
+      if (!inRoom(row.code)) return;
+      this.squadSize = row.size === 3 ? 3 : 5;
+      this.emitRoom();
+    };
+    conn.db.squad.onInsert((_ctx: EventContext, row: Squad) => applySquad(row));
+    conn.db.squad.onUpdate((_ctx: EventContext, _prev: Squad, next: Squad) => applySquad(next));
+    conn.db.squad.onDelete((_ctx: EventContext, row: Squad) => {
+      if (!inRoom(row.code)) return;
+      this.squadSize = 5;
+      this.emitRoom();
+    });
   }
 
   private emitScores() {
@@ -309,6 +324,7 @@ export class Net {
       code: this.code,
       phase: (this.roomRow?.phase ?? "lobby") as Phase,
       challengeId: this.roomRow?.challengeId ?? "wobble-run",
+      squadSize: this.squadSize,
       players: infos,
       teams: teamInfos,
       startAt: this.roomRow && this.roomRow.startAtMicros > 0n ? msOf(this.roomRow.startAtMicros) + this.serverOffset : null,
@@ -334,6 +350,9 @@ export class Net {
   }
   setChallenge(challengeId: string) {
     this.conn?.reducers.setChallenge({ challengeId });
+  }
+  setSquad(squadSize: SquadSize) {
+    this.conn?.reducers.setSquad({ size: squadSize });
   }
   startRound(force: boolean) {
     this.conn?.reducers.startRound({ force });
