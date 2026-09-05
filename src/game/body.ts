@@ -1,12 +1,12 @@
 import * as THREE from "three";
 import type RAPIER_T from "@dimforge/rapier3d-compat";
-import { ROLES, emptyInput, type Role, type RoleInput } from "./types";
+import { PHYS_ROLES, emptyInput, type PhysRole, type RoleInput } from "./types";
 
 type R = typeof RAPIER_T;
 type World = RAPIER_T.World;
 type RigidBody = RAPIER_T.RigidBody;
 
-export type BodyInputs = Record<Role, RoleInput>;
+export type BodyInputs = Record<PhysRole, RoleInput>;
 export const makeInputs = (): BodyInputs => ({ head: emptyInput(), arms: emptyInput(), torso: emptyInput(), lleg: emptyInput(), rleg: emptyInput() });
 
 export const GROUP_ENV = 0b001;
@@ -617,7 +617,7 @@ export class RagdollBody {
     }
 
     // copy prev
-    for (const r of ROLES) Object.assign(this.prev[r], inp[r]);
+    for (const r of PHYS_ROLES) Object.assign(this.prev[r], inp[r]);
   }
 
   private updateHand(hand: 0 | 1, want: boolean) {
