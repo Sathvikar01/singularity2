@@ -4,7 +4,8 @@ import type RAPIER_T from "@dimforge/rapier3d-compat";
 import { RagdollBody, PARTS, PART_COUNT, PELVIS, HEAD, CHEST, GROUP_ENV, GROUP_PROP, groups, findStaticGrab, type BodyEvent, type GrabTarget } from "./body";
 import { getLevel, type LevelDef, type PropDef, type ZoneDef } from "./levels";
 import { GameAudio } from "./audio";
-import type { Role, RoleInput } from "./types";
+import type { Role, RoleInput, SquadSize } from "./types";
+import { makeSquadMixState, resolvePhysInputs, type SquadMixState } from "./squad";
 
 type R = typeof RAPIER_T;
 let RAPIER: R | null = null;
@@ -52,7 +53,18 @@ export interface GameOptions {
   teamId: number;
   teamColor: string;
   isHost: boolean;
+  squadSize?: SquadSize;
   onEvent: (ev: GameEvent) => void;
+}
+
+interface Mover {
+  rb: RigidBodyT;
+  mesh: THREE.Mesh;
+  base: THREE.Vector3;
+  axis: "x" | "z";
+  dist: number;
+  speed: number;
+  phase: number;
 }
 
 const SKIN = "#ffd9b3";
@@ -381,6 +393,13 @@ export class Game {
   teamName = "Team";
   remoteInputs: Partial<Record<Role, RoleInput>> = {};
   localInputs: Partial<Record<Role, RoleInput>> = {};
+  squadSize: SquadSize = 5;
+  squadMix: SquadMixState = makeSquadMixState();
+  movers: Mover[] = [];
+  moverT = 0;
+  delivered = false;
+  denyCooldown = 0;
+  skyMat: THREE.ShaderMaterial | null = null;
   onEvent: GameOptions["onEvent"];
   // camera
   camYaw = 0;
@@ -429,6 +448,7 @@ export class Game {
     this.isHost = opts.isHost;
     this.teamId = opts.teamId;
     this.teamColor = opts.teamColor;
+    this.squadSize = opts.squadSize === 3 ? 3 : 5;
     const canvas = opts.canvas;
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
@@ -452,6 +472,7 @@ export class Game {
     const sky = new THREE.Mesh(skyGeo, skyMat);
     sky.frustumCulled = false;
     this.scene.add(sky);
+    this.skyMat = skyMat;
 
     const hemi = new THREE.HemisphereLight("#cfe4ff", "#5f8a4a", 0.75);
     this.scene.add(hemi);
@@ -525,6 +546,10 @@ export class Game {
     this.checkpointMeshes = [];
     this.finishGate = null;
     this.deliverPad = null;
+    this.movers = [];
+    this.moverT = 0;
+    this.delivered = false;
+    this.squadMix = makeSquadMixState();
     this.score = 0;
     this.checkpointIdx = -1;
     this.timer = 0;
@@ -532,10 +557,26 @@ export class Game {
     this.finished = false;
 
     const L = this.level;
+    // per-level sky + water tint (falls back to day blue)
+    if (this.skyMat) {
+      const sky = L.sky ?? { top: "#3f7fe0", mid: "#8fc2ff", bot: "#e6f1ff", fog: "#cfe3ff" };
+      this.skyMat.uniforms.top.value.set(sky.top);
+      this.skyMat.uniforms.mid.value.set(sky.mid);
+      this.skyMat.uniforms.bot.value.set(sky.bot);
+      this.scene.fog = new THREE.Fog(new THREE.Color(sky.fog), 45, 160);
+    }
+    if (this.water) {
+      (this.water.material as THREE.MeshStandardMaterial).color.set(L.water ?? "#2f8fe0");
+      this.water.position.y = L.killY < -3 ? -4 : -3;
+    }
     for (const s of L.statics) {
       const rot = new THREE.Euler(s.rot?.[0] ?? 0, s.rot?.[1] ?? 0, s.rot?.[2] ?? 0);
       const q = new THREE.Quaternion().setFromEuler(rot);
-      const rb = this.world.createRigidBody(R.RigidBodyDesc.fixed().setTranslation(s.pos[0], s.pos[1], s.pos[2]).setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }));
+      const isMover = Boolean(s.slide);
+      const desc = isMover
+        ? R.RigidBodyDesc.kinematicVelocityBased().setTranslation(s.pos[0], s.pos[1], s.pos[2]).setRotation({ x: q.x, y: q.y, z: q.z, w: q.w })
+        : R.RigidBodyDesc.fixed().setTranslation(s.pos[0], s.pos[1], s.pos[2]).setRotation({ x: q.x, y: q.y, z: q.z, w: q.w });
+      const rb = this.world.createRigidBody(desc);
       const col = this.world.createCollider(R.ColliderDesc.cuboid(s.size[0] / 2, s.size[1] / 2, s.size[2] / 2).setFriction(0.9).setCollisionGroups(groups(GROUP_ENV, 0xffff)), rb);
       if (s.grab === false) this.nonGrabHandles.add(col.handle);
       this.staticBodies.push(rb);
@@ -547,6 +588,7 @@ export class Game {
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       this.levelGroup.add(mesh);
+      if (isMover) this.movers.push({ rb, mesh, base: new THREE.Vector3(s.pos[0], s.pos[1], s.pos[2]), axis: s.slide!.axis, dist: s.slide!.dist, speed: s.slide!.speed, phase: s.slide!.phase ?? 0 });
       if (s.kind === "ground" || s.kind === "block") {
         // decorative edge stripe
         const stripe = new THREE.Mesh(
@@ -818,7 +860,20 @@ export class Game {
     this.timer = 0;
     this.score = 0;
     this.checkpointIdx = -1;
+    this.delivered = false;
+    this.denyCooldown = 0;
+    this.moverT = 0;
+    this.squadMix = makeSquadMixState();
     for (const f of this.checkpointMeshes) (f.material as THREE.MeshStandardMaterial).color.set("#ffd23f");
+    if (this.isHost) {
+      for (const m of this.movers) {
+        m.rb.setTranslation({ x: m.base.x, y: m.base.y, z: m.base.z }, true);
+        m.rb.setLinvel({ x: 0, y: 0, z: 0 }, true);
+        m.mesh.position.copy(m.base);
+      }
+    } else {
+      for (const m of this.movers) m.mesh.position.copy(m.base);
+    }
     if (this.isHost && this.body) {
       this.body.teleport(new THREE.Vector3(...this.level.spawn), this.level.spawnYaw);
       for (const p of this.props) this.resetProp(p);
@@ -871,12 +926,10 @@ export class Game {
 
   private frame(dt: number) {
     if (this.isHost && this.body) {
-      // apply inputs
-      const inp = this.body.inputs;
-      for (const role of Object.keys(inp) as Role[]) {
-        const src = this.localInputs[role] ?? this.remoteInputs[role];
-        if (src) Object.assign(inp[role], src);
-      }
+      // merge squad inputs (3P/5P) into the 5 physics channels
+      const merged: Partial<Record<Role, RoleInput>> = { ...this.remoteInputs, ...this.localInputs };
+      const phys = resolvePhysInputs(merged, this.squadSize, Math.min(dt, 0.1), this.squadMix);
+      Object.assign(this.body.inputs, phys);
       this.accumulator += dt;
       let steps = 0;
       while (this.accumulator >= this.fixedDt && steps < 5) {
@@ -897,6 +950,10 @@ export class Game {
         p.mesh.position.set(t.x, t.y, t.z);
         p.mesh.quaternion.set(r.x, r.y, r.z, r.w);
       }
+      for (const m of this.movers) {
+        const t = m.rb.translation();
+        m.mesh.position.set(t.x, t.y, t.z);
+      }
       this.sendAcc += dt;
       if (this.sendAcc >= 1 / 15) {
         this.sendAcc = 0;
@@ -906,6 +963,14 @@ export class Game {
       }
     } else {
       this.applyInterpolated(this.ownBuffer, this.displayTransforms, true);
+      // guests mirror deterministic movers locally (host runs the physics)
+      if (this.movers.length > 0 && !this.frozen) {
+        this.moverT += dt;
+        for (const m of this.movers) {
+          const off = Math.sin(this.moverT * m.speed + m.phase) * m.dist;
+          m.mesh.position.set(m.base.x + (m.axis === "x" ? off : 0), m.base.y, m.base.z + (m.axis === "z" ? off : 0));
+        }
+      }
     }
     this.view.setTransforms(this.displayTransforms);
     this.view.setFace(dt, this.displayYaw, this.displayPitch, this.pelvisYawFromDisplay(), this.displayFallen, this.displayHolding > 0);
@@ -926,7 +991,6 @@ export class Game {
     const t = performance.now() / 1000;
     if (this.deliverPad) (this.deliverPad.material as THREE.MeshStandardMaterial).emissiveIntensity = 0.6 + Math.sin(t * 4) * 0.4;
     for (const f of this.checkpointMeshes) f.rotation.y = Math.sin(t * 3 + f.userData.idx) * 0.2;
-    if (this.water) (this.water.material as THREE.MeshStandardMaterial).color.setHSL(0.58, 0.7, 0.5 + Math.sin(t * 0.8) * 0.03);
     this.sun.position.copy(this.camFocus).add(new THREE.Vector3(18, 32, 14));
     this.sun.target.position.copy(this.camFocus);
     this.hudAcc += dt;
@@ -945,9 +1009,21 @@ export class Game {
 
   private stepPhysics(dt: number) {
     const body = this.body!;
+    // kinematic movers (ferries / timing gates) — ponytail: velocity-based so riders get carried
+    if (this.movers.length > 0) {
+      this.moverT += dt;
+      for (const m of this.movers) {
+        const off = Math.sin(this.moverT * m.speed + m.phase) * m.dist;
+        const nx = m.base.x + (m.axis === "x" ? off : 0);
+        const nz = m.base.z + (m.axis === "z" ? off : 0);
+        const cur = m.rb.translation();
+        m.rb.setLinvel({ x: (nx - cur.x) / dt, y: 0, z: (nz - cur.z) / dt }, true);
+      }
+    }
     body.update(dt);
     // props cooldown
     for (const p of this.props) p.cooldown = Math.max(0, p.cooldown - dt);
+    this.denyCooldown = Math.max(0, this.denyCooldown - dt);
     this.world.step(this.eventQueue);
     if (this.running && !this.finished) this.timer += dt;
     // body events
@@ -1024,13 +1100,38 @@ export class Game {
         this.message("CHECKPOINT!", "good");
       }
     });
-    if (L.finish && inZone(pp, L.finish) && !body.fallen) this.finish();
     if (L.deliver) {
       for (const p of this.props) {
         if (!p.def.deliverable || !p.body) continue;
         const t = p.body.translation();
         const v = p.body.linvel();
-        if (inZone(tmpV2.set(t.x, t.y, t.z), L.deliver) && !body.isHolding(p.id) && Math.hypot(v.x, v.y, v.z) < 0.8) this.finish();
+        if (inZone(tmpV2.set(t.x, t.y, t.z), L.deliver) && !body.isHolding(p.id) && Math.hypot(v.x, v.y, v.z) < 0.8) {
+          if (L.requireDeliverThenFinish && L.finish) {
+            if (!this.delivered) {
+              this.delivered = true;
+              this.handleLevelEvent({ type: "score", pos: [t.x, t.y, t.z] }, true);
+              this.message("CORE PLACED! Now sprint the timing gate!", "good");
+            }
+          } else this.finish();
+        }
+      }
+    }
+    if (L.finish && inZone(pp, L.finish) && !body.fallen) {
+      if (!L.requireDeliverThenFinish) this.finish();
+      else {
+        // the core must STILL be on the pad when you cross — knocked off = go back
+        let placed = false;
+        for (const p of this.props) {
+          if (!p.def.deliverable || !p.body) continue;
+          const t = p.body.translation();
+          const v = p.body.linvel();
+          if (inZone(tmpV2.set(t.x, t.y, t.z), L.deliver!) && !body.isHolding(p.id) && Math.hypot(v.x, v.y, v.z) < 0.8) { placed = true; break; }
+        }
+        if (placed) this.finish();
+        else if (this.denyCooldown <= 0) {
+          this.denyCooldown = 2.5;
+          this.message(this.delivered ? "The core fell off! Put it back!" : "Place the core first!", "bad");
+        }
       }
     }
     if (L.hoop) {
