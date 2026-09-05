@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { CHALLENGES, ROLES, ROLE_INFO, formatTime, type Role, type RoleInput, type RoomSnapshot } from "@/game/types";
+import { CHALLENGES, ROLE_INFO, formatTime, squadRoles, type Role, type RoleInput, type RoomSnapshot, type SquadSize } from "@/game/types";
 import type { Game, HudState, Snap } from "@/game/game";
 import { Net, type ScoreRow } from "@/game/net";
 import { InputManager, inputsEqual } from "@/game/input";
@@ -39,6 +39,7 @@ export default function GameClient({ code, solo }: { code: string; solo: boolean
   const [countdown, setCountdown] = useState<number | null>(null);
   const [activeRole, setActiveRole] = useState(0);
   const [leaderboard, setLeaderboard] = useState<ScoreRow[]>([]);
+  const [boardSquad, setBoardSquad] = useState<SquadSize>(5);
   const [muted, setMuted] = useState(false);
   const [ready, setReady] = useState(false);
   const [gameReady, setGameReady] = useState(false);
@@ -145,6 +146,7 @@ export default function GameClient({ code, solo }: { code: string; solo: boolean
         teamId: myTeam.id,
         teamColor: myTeam.color,
         isHost: host,
+        squadSize: room.squadSize,
         onEvent: (ev) => {
           if (ev.type === "hud") setHud(ev.hud);
           else if (ev.type === "message") addToast(ev.text, ev.tone);
@@ -176,6 +178,7 @@ export default function GameClient({ code, solo }: { code: string; solo: boolean
     if (!g || !room || !me || !myTeam) return;
     g.setTeamName(myTeam.name);
     g.setHost(myTeam.hostId === me.id);
+    g.squadSize = room.squadSize;
     g.clearRemoteInputs();
     // remove ghosts of vanished teams
     for (const id of [...g.ghosts.keys()]) if (!room.teams.some((t) => t.id === id) || id === myTeam.id) g.removeGhost(id);
@@ -258,17 +261,13 @@ export default function GameClient({ code, solo }: { code: string; solo: boolean
       const idx = Math.min(activeRoleRef.current, Math.max(0, roles.length - 1));
       const active = roles[idx];
       input.enabled = r.phase !== "results";
-      input.tickHead(dt, active === "head");
+      // Torso steers the camera (legacy Head role also works)
+      input.tickHead(dt, active === "torso" || active === "head");
       const payload: Partial<Record<Role, RoleInput>> = {};
       let changed = false;
       if (g.isHost) g.localInputs = {};
       for (const role of roles) {
-        const inp = input.read(role, role === active || (role === "head" && roles.length > 1 && false));
-        if (role === "head" && active !== "head") {
-          // keep mouse look alive for head role even when keys drive another role
-          inp.lx = input.yaw;
-          inp.ly = input.pitch;
-        }
+        const inp = input.read(role, role === active);
         payload[role] = inp;
         if (g.isHost) g.setLocalInput(role, inp);
         const prev = lastSentRef.current[role];
@@ -300,7 +299,7 @@ export default function GameClient({ code, solo }: { code: string; solo: boolean
   };
   const onCanvasClick = () => {
     ensureAudio();
-    if (myRoles.includes("head") && room?.phase !== "lobby") inputRef.current?.requestPointerLock();
+    if ((myRoles.includes("torso") || myRoles.includes("head")) && room?.phase !== "lobby") inputRef.current?.requestPointerLock();
   };
 
   const allReady = !!room && room.players.length > 0 && room.players.every((p) => p.ready);
@@ -308,8 +307,8 @@ export default function GameClient({ code, solo }: { code: string; solo: boolean
   const sortedTeams = room ? [...room.teams].sort((a, b) => (a.finishMs ?? 1e12) - (b.finishMs ?? 1e12)) : [];
   const level = room ? getLevel(room.challengeId) : null;
   const roomScores = useMemo(
-    () => leaderboard.filter((row) => row.challengeId === room?.challengeId).slice(0, 10),
-    [leaderboard, room?.challengeId]
+    () => leaderboard.filter((row) => row.challengeId === room?.challengeId && (row.players?.length ?? 5) === boardSquad).slice(0, 10),
+    [leaderboard, room?.challengeId, boardSquad]
   );
 
   return (
@@ -482,7 +481,28 @@ export default function GameClient({ code, solo }: { code: string; solo: boolean
                 Copy invite link
               </button>
             </div>
-            <div className="mt-2 text-xs text-white/60">Friends open the link, pick a body part, ready up. Fewer than 5? Missing parts get shared (Tab to switch).</div>
+            <div className="mt-2 text-xs text-white/60">Friends open the link, pick a body part, ready up. Missing parts get shared (Tab to switch).</div>
+          </div>
+
+          {/* Squad size */}
+          <div className="rounded-2xl bg-black/60 backdrop-blur p-4 border border-white/10">
+            <div className="mb-2 text-[10px] uppercase tracking-widest text-white/60">Squad size {isLeader ? "(you pick)" : ""}</div>
+            <div className="grid grid-cols-2 gap-2">
+              {([3, 5] as SquadSize[]).map((n) => (
+                <button
+                  key={n}
+                  disabled={!isLeader}
+                  onClick={() => netRef.current?.setSquad(n)}
+                  className={`rounded-xl px-3 py-2 text-left transition ${room.squadSize === n ? "bg-[#6ef29a] text-black" : "bg-white/5 hover:bg-white/10 disabled:hover:bg-white/5"}`}
+                >
+                  <div className="font-black leading-tight">{n} players</div>
+                  <div className={`text-xs ${room.squadSize === n ? "text-black/70" : "text-white/60"}`}>
+                    {n === 3 ? "Arms · Torso · Legs" : "2 hands · Torso · 2 legs"}
+                  </div>
+                </button>
+              ))}
+            </div>
+            <div className="mt-2 text-xs text-white/60">Separate leaderboards for 3P and 5P. Switching clears role picks.</div>
           </div>
 
           {/* Challenge */}
@@ -497,8 +517,13 @@ export default function GameClient({ code, solo }: { code: string; solo: boolean
                   className={`flex items-center gap-3 rounded-xl px-3 py-2 text-left transition ${room.challengeId === c.id ? "bg-[#ffd23f] text-black" : "bg-white/5 hover:bg-white/10 disabled:hover:bg-white/5"}`}
                 >
                   <span className="text-2xl">{c.icon}</span>
-                  <div>
-                    <div className="font-black leading-tight">{c.name}</div>
+                  <div className="min-w-0">
+                    <div className="font-black leading-tight">
+                      {c.name}{" "}
+                      <span className={`ml-1 rounded px-1.5 py-0.5 text-[10px] font-black uppercase ${c.difficulty === "easy" ? "bg-[#6ef29a] text-black" : c.difficulty === "medium" ? "bg-[#4fa8ff] text-black" : c.difficulty === "hard" ? "bg-[#ff5d5d] text-black" : "bg-white/20 text-white"}`}>
+                        {c.difficulty}
+                      </span>
+                    </div>
                     <div className={`text-xs ${room.challengeId === c.id ? "text-black/70" : "text-white/60"}`}>{c.tagline}</div>
                   </div>
                 </button>
@@ -517,17 +542,17 @@ export default function GameClient({ code, solo }: { code: string; solo: boolean
                     <span className="h-3 w-3 rounded-full" style={{ background: t.color }} />
                     <span className="font-black">{t.name}</span>
                     <span className="text-xs text-white/50">
-                      {members.length}/5
+                      {members.length}/{room.squadSize}
                     </span>
                   </div>
-                  {!mine && members.length < 5 && (
+                  {!mine && members.length < room.squadSize && (
                     <button onClick={() => netRef.current?.joinTeam(t.id)} className="rounded-lg bg-white/10 px-2 py-1 text-xs font-bold hover:bg-white/20">
                       Join
                     </button>
                   )}
                 </div>
-                <div className="mt-3 grid grid-cols-5 gap-1">
-                  {ROLES.map((r) => {
+                <div className={`mt-3 grid gap-1 ${room.squadSize === 3 ? "grid-cols-3" : "grid-cols-5"}`}>
+                  {squadRoles(room.squadSize).map((r) => {
                     const owner = members.find((m) => m.roles.includes(r));
                     const isMe = owner?.id === me.id;
                     return (
@@ -611,7 +636,20 @@ export default function GameClient({ code, solo }: { code: string; solo: boolean
                 </div>
               </div>
               <div>
-                <div className="mb-2 text-xs uppercase tracking-widest text-white/60">All-time leaderboard</div>
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-xs uppercase tracking-widest text-white/60">All-time leaderboard</span>
+                  <span className="flex gap-1">
+                    {([3, 5] as SquadSize[]).map((n) => (
+                      <button
+                        key={n}
+                        onClick={() => setBoardSquad(n)}
+                        className={`rounded-lg px-2 py-0.5 text-xs font-black ${boardSquad === n ? "bg-[#6ef29a] text-black" : "bg-white/10 text-white/70 hover:bg-white/20"}`}
+                      >
+                        {n}P
+                      </button>
+                    ))}
+                  </span>
+                </div>
                 <div className="flex flex-col gap-1 max-h-72 overflow-y-auto pr-1">
                   {roomScores.length === 0 && <div className="text-sm text-white/50">No times yet. Be the first!</div>}
                   {roomScores.map((row, i) => {
